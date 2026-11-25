@@ -1,10 +1,13 @@
-name: Release TheUnkwn APK
+name: Release TheUnkwn APK and AAB
 
 on:
   workflow_dispatch:
   push:
     tags:
       - 'v*'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 permissions:
   contents: write
@@ -15,7 +18,7 @@ concurrency:
 
 jobs:
   release-apk:
-    name: Build signed TheUnkwn APK
+    name: Build TheUnkwn APKs and AAB
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -37,6 +40,7 @@ jobs:
             mkdir -p "$extraction_dir"
             echo "Extracting TheUnkwn.zip into folder: TheUnkwn/"
             unzip -oq "$archive" -d "$extraction_dir"
+            rm -rf "$extraction_dir/.github/workflows"
             cp -a "$extraction_dir/." .
           elif [[ ! -f app/build.gradle.kts && ! -f app/build.gradle ]]; then
             echo "ERROR: TheUnkwn.zip was not found and the Android app module is missing. Add exactly TheUnkwn.zip or commit the extracted project files at the repository root."
@@ -79,15 +83,27 @@ jobs:
         with:
           validate-wrappers: true
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install Android SDK components
         shell: bash
         run: |
           set -euo pipefail
+          command -v sdkmanager >/dev/null
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Build debug APK
+        run: ./build-with-bundled-gradle.sh --no-daemon --stacktrace assembleDebug
+
+      - name: Name debug APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk TheUnkwn-debug.apk
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: TheUnkwn-debug
+          path: TheUnkwn-debug.apk
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Restore and validate release keystore
         shell: bash
@@ -134,12 +150,12 @@ jobs:
           echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/theunkwn-release.jks" >> "$GITHUB_ENV"
           echo "Release keystore and alias validated."
 
-      - name: Build signed release APK
+      - name: Build signed release APK and AAB
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./build-with-bundled-gradle.sh --no-daemon --stacktrace assembleRelease
+        run: ./build-with-bundled-gradle.sh --no-daemon --stacktrace assembleRelease bundleRelease
 
       - name: Name APK exactly TheUnkwn.apk
         shell: bash
@@ -158,11 +174,33 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Name and verify signed AAB
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_aab='app/build/outputs/bundle/release/app-release.aab'
+          test -s "$source_aab"
+          cp "$source_aab" TheUnkwn.aab
+          jarsigner -verify TheUnkwn.aab
+          sha256sum TheUnkwn.aab
+
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: TheUnkwn-AAB
+          path: TheUnkwn.aab
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          name: TheUnkwn ${{ github.ref_name }}
-          generate_release_notes: true
-          files: TheUnkwn.apk
-          fail_on_unmatched_files: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" TheUnkwn.apk TheUnkwn.aab --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" TheUnkwn.apk TheUnkwn.aab --verify-tag --generate-notes --title "TheUnkwn $GITHUB_REF_NAME"
+          fi
