@@ -1,3 +1,4 @@
+
 name: Release TheUnkwn APK and AAB
 
 on:
@@ -228,3 +229,88 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" TheUnkwn.apk TheUnkwn.aab --verify-tag --generate-notes --title "TheUnkwn $GITHUB_REF_NAME"
           fi
+
+  threat-simulator:
+    name: Build TheUnkwn Threat Simulator APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Extract and verify Threat Simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f TheUnkwn-Threat-Simulator.zip || { echo 'Missing TheUnkwn-Threat-Simulator.zip'; exit 1; }
+          mkdir -p "$RUNNER_TEMP/TheUnkwn-Threat-Simulator"
+          unzip -oq TheUnkwn-Threat-Simulator.zip -d "$RUNNER_TEMP/TheUnkwn-Threat-Simulator"
+          cd "$RUNNER_TEMP/TheUnkwn-Threat-Simulator"
+          test -f app/build.gradle.kts
+          test -f app/src/main/AndroidManifest.xml
+          test -f settings.gradle.kts
+          test -f build.gradle.kts
+          test -f gradle/wrapper/gradle-wrapper.properties
+          echo '498495120a03b9a6ab5d155f5de3c8f0d986a449153702fb80fc80e134484f17  gradle/wrapper/gradle-wrapper.jar' | sha256sum --check
+          chmod +x gradlew
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          validate-wrappers: true
+
+      - name: Install Android SDK components
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "Android SDK root: $SDK_ROOT"
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [[ -z "$SDKMANAGER" ]]; then
+            if [[ -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]]; then
+              SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+            elif [[ -d "$SDK_ROOT/cmdline-tools" ]]; then
+              SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager -print -quit)"
+            fi
+          fi
+          if [[ -z "$SDKMANAGER" || ! -x "$SDKMANAGER" ]]; then
+            echo "ERROR: Android SDK manager not found under $SDK_ROOT or on PATH."
+            exit 1
+          fi
+          echo "Using SDK manager: $SDKMANAGER"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          dirname "$SDKMANAGER" >> "$GITHUB_PATH"
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+          "$SDKMANAGER" --version
+          set +o pipefail
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses
+          set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "platforms;android-35" "build-tools;35.0.0"
+          test -f "$SDK_ROOT/platforms/android-35/android.jar"
+          test -x "$SDK_ROOT/build-tools/35.0.0/apksigner"
+          echo "Android SDK setup completed."
+
+      - name: Build Threat Simulator debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/TheUnkwn-Threat-Simulator"
+          ./gradlew --no-daemon --stacktrace assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/TheUnkwn-Threat-Simulator.apk"
+          test -s "$GITHUB_WORKSPACE/TheUnkwn-Threat-Simulator.apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify "$GITHUB_WORKSPACE/TheUnkwn-Threat-Simulator.apk"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: TheUnkwn-Threat-Simulator
+          path: TheUnkwn-Threat-Simulator.apk
+          if-no-files-found: error
+          retention-days: 30
