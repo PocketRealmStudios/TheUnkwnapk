@@ -151,7 +151,7 @@ jobs:
           sha256sum TheUnkwn.apk
 
       - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: TheUnkwn
           path: TheUnkwn.apk
